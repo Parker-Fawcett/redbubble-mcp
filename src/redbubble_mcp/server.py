@@ -133,6 +133,31 @@ def graphql_tool(query: str, variables: dict | None = None) -> str:
 
 
 @mcp.tool
+def edit_work(
+    work_url: str,
+    title: str | None = None,
+    tags: str | None = None,
+    description: str | None = None,
+) -> str:
+    """Edit an existing work: title, tags (max 15, comma-separated; first tag is the
+    primary tag), description (max 250 chars). work_url format:
+    https://www.redbubble.com/portfolio/images/<id>-<slug>."""
+    from redbubble_mcp.edit_work import edit_work as _edit
+
+    try:
+        return json.dumps(
+            _edit(
+                work_url=work_url,
+                title=title,
+                tags=tags,
+                description=description,
+            )
+        )
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+@mcp.tool
 def upload_work(
     image_path: str,
     title: str,
