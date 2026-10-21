@@ -7,12 +7,10 @@ Usage: redbubble-mcp-login
 from __future__ import annotations
 
 import sys
-from urllib.parse import urlparse
 
 from redbubble_mcp.guards import DEFAULT_DIR
 
 LOGIN_URL = "https://www.redbubble.com/auth/login"
-LOGGED_IN_HINT = "https://www.redbubble.com/"
 
 
 def main() -> int:
@@ -22,6 +20,7 @@ def main() -> int:
         print("Playwright is not installed. Run: python -m pip install playwright && python -m playwright install chromium")
         return 1
 
+    DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
     print("Opening a browser window - log into your Redbubble account there.")
     print("The window stays open until you log in successfully.")
     print("(There should be nothing sensitive printed, but already logged in? Press Ctrl+C to skip.)")
@@ -31,31 +30,36 @@ def main() -> int:
         context = browser.new_context()
         page = context.new_page()
 
-        page.goto(LOGGED_IN_HINT)
-        if "auth/login" in page.url:
-            page.goto(LOGIN_URL)
+        page.goto(LOGIN_URL)
 
-        try:
-            page.wait_for_url(lambda url: "auth" not in url and urlparse(url).netloc == "www.redbubble.com", timeout=0)
-        except Exception:
-            pass
-        input("Log in, then press Enter here to save the session > ")
+        while True:
+            try:
+                input("Log in, then press Enter here to save the session > ")
+            except EOFError:
+                return 1
 
-        cookies = [
-            {"name": c["name"], "value": c["value"]}
-            for c in context.cookies()
-            if "redbubble" in c["domain"]
-        ]
-        if not cookies:
-            print("No Redbubble cookies captured - session was NOT saved.")
-            return 1
-        ua = page.evaluate("navigator.userAgent") or ""
-        context.storage_state(path=str(DEFAULT_DIR / "storage_state.json"))
+            redbubble_cookies = [
+                {"name": c["name"], "value": c["value"]}
+                for c in context.cookies()
+                if "redbubble" in c["domain"]
+            ]
+            if len(redbubble_cookies) < 3:
+                print(
+                    f"Only {len(redbubble_cookies)} Redbubble cookies so far - "
+                    "you probably aren't logged in yet. Log in, then press Enter again."
+                )
+                continue
+
+            ua = page.evaluate("navigator.userAgent") or ""
+            context.storage_state(path=str(DEFAULT_DIR / "storage_state.json"))
+            break
 
     from redbubble_mcp.session import SessionStore
 
-    SessionStore().save_cookies({c["name"]: c["value"] for c in cookies}, user_agent=ua)
-    print(f"Saved {len(cookies)} cookies -> {DEFAULT_DIR / 'session.json'}")
+    SessionStore().save_cookies(
+        {c["name"]: c["value"] for c in redbubble_cookies}, user_agent=ua
+    )
+    print(f"Saved {len(redbubble_cookies)} cookies -> {DEFAULT_DIR / 'session.json'}")
     print("Start the MCP server with: redbubble-mcp")
     return 0
 
