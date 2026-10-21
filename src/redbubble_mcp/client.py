@@ -48,16 +48,19 @@ class RedbubbleClient:
 
     # -- session refresh -------------------------------------------
     def _refresh_session(self) -> None:
-        resp = self.http.get("/", headers=self._headers(), follow_redirects=True)
+        resp = self.http.get(
+            self.base_url, headers=self._headers(), follow_redirects=True
+        )
         resp.raise_for_status()
         self.session_store.merge_cookies(dict(resp.cookies))
 
     # -- requests ---------------------------------------------------
     def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        url = path if path.startswith("http") else f"{self.base_url}{path}"
         auth_attempts = 0
         while True:
             resp = self.http.request(
-                method, path, headers=self._headers(), follow_redirects=True, **kwargs
+                method, url, headers=self._headers(), follow_redirects=True, **kwargs
             )
             if resp.status_code in (401, 403) and auth_attempts < self.max_auth_retries:
                 auth_attempts += 1
