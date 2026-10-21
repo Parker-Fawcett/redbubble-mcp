@@ -27,19 +27,29 @@ def main() -> int:
             "&& python -m playwright install chromium"
         )
         return 1
+    from playwright._impl._errors import TargetClosedError
 
     DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
     print("Attaching to (or starting) the persistent Redbubble browser window.")
     print("Log into your account IN THAT WINDOW - captchas stay human.")
+    print("(If you close that window by mistake, no problem: press Enter and it relaunches.)")
 
     browser_session._ensure_chrome()
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(browser_session.CDP_URL)
-        context = browser.contexts[0]
-        page = context.pages[0] if context.pages else context.new_page()
+        def reconnect():
+            browser_session._ensure_chrome()
+            browser = p.chromium.connect_over_cdp(browser_session.CDP_URL)
+            context = browser.contexts[0]
+            page = context.pages[0] if context.pages else context.new_page()
+            return browser, context, page
 
-        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
+        browser, context, page = reconnect()
+        try:
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
+        except TargetClosedError:
+            browser, context, page = reconnect()
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
 
         while True:
             try:
@@ -48,8 +58,12 @@ def main() -> int:
                 print("Aborted - nothing saved.")
                 return 1
 
-            # treat redirects to the dashboard/home as logged-in proof
-            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
+            except TargetClosedError:
+                print("The window was closed - relaunching it...")
+                browser, context, page = reconnect()
+                page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_timeout(3_000)
             body = page.evaluate("document.body.innerText.slice(0, 4000)")
 
