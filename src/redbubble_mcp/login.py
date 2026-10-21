@@ -1,67 +1,86 @@
-"""One-time login helper: opens a real browser window, you log into Redbubble
-manually (including any captcha), and the session is saved for the MCP server.
+"""One-time login helper for the persistent Redbubble browser.
 
 Usage: redbubble-mcp-login
+Attaches to (or spawns) the detached Redbubble browser window, lets you log in
+manually there (captchas stay human), then saves the session snapshot.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 
+from redbubble_mcp import browser_session
 from redbubble_mcp.guards import DEFAULT_DIR
 
 LOGIN_URL = "https://www.redbubble.com/auth/login"
+HOME_URL = "https://www.redbubble.com/"
+LOGGED_IN_MARKS = ("Manage portfolio", "Add new work", "Add New Work", "Saved payment")
 
 
 def main() -> int:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("Playwright is not installed. Run: python -m pip install playwright && python -m playwright install chromium")
+        print(
+            "Playwright is not installed. Run: python -m pip install playwright "
+            "&& python -m playwright install chromium"
+        )
         return 1
 
     DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
-    print("Opening a browser window - log into your Redbubble account there.")
-    print("The window stays open until you log in successfully.")
-    print("(There should be nothing sensitive printed, but already logged in? Press Ctrl+C to skip.)")
+    print("Attaching to (or starting) the persistent Redbubble browser window.")
+    print("Log into your account IN THAT WINDOW - captchas stay human.")
+
+    browser_session._ensure_chrome()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
+        browser = p.chromium.connect_over_cdp(browser_session.CDP_URL)
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else context.new_page()
 
-        page.goto(LOGIN_URL)
+        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
 
         while True:
             try:
-                input("Log in, then press Enter here to save the session > ")
-            except EOFError:
+                input("Log in inside the window, then press Enter here > ")
+            except (EOFError, KeyboardInterrupt):
+                print("Aborted - nothing saved.")
                 return 1
 
-            redbubble_cookies = [
-                {"name": c["name"], "value": c["value"]}
-                for c in context.cookies()
-                if "redbubble" in c["domain"]
-            ]
-            if len(redbubble_cookies) < 3:
+            # treat redirects to the dashboard/home as logged-in proof
+            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(3_000)
+            body = page.evaluate("document.body.innerText.slice(0, 4000)")
+
+            if not any(mark in body for mark in LOGGED_IN_MARKS):
                 print(
-                    f"Only {len(redbubble_cookies)} Redbubble cookies so far - "
-                    "you probably aren't logged in yet. Log in, then press Enter again."
+                    "Doesn't look logged in yet (no artist dashboard detected). "
+                    "Finish the login in the window and press Enter again."
                 )
                 continue
 
+            cookies = context.cookies("https://www.redbubble.com")
+            cookie_values = {c["name"]: c["value"] for c in cookies}
             ua = page.evaluate("navigator.userAgent") or ""
-            context.storage_state(path=str(DEFAULT_DIR / "storage_state.json"))
-            break
 
-    from redbubble_mcp.session import SessionStore
+            (DEFAULT_DIR / "storage_state.json").write_text(
+                json.dumps(
+                    {
+                        "cookies": cookies,
+                        "origins": [],
+                        "userAgent": ua,
+                    }
+                ),
+                "utf-8",
+            )
 
-    SessionStore().save_cookies(
-        {c["name"]: c["value"] for c in redbubble_cookies}, user_agent=ua
-    )
-    print(f"Saved {len(redbubble_cookies)} cookies -> {DEFAULT_DIR / 'session.json'}")
-    print("Start the MCP server with: redbubble-mcp")
-    return 0
+            from redbubble_mcp.session import SessionStore
+
+            SessionStore().save_cookies(cookie_values, user_agent=ua)
+            print(f"Session captured ({len(cookies)} cookies) -> {DEFAULT_DIR / 'session.json'}")
+            print("Done. The Redbubble window stays open; the MCP server will use it.")
+            return 0
 
 
 if __name__ == "__main__":
