@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from redbubble_mcp.guards import DEFAULT_DIR
 
 PAGES = [
+    "https://www.redbubble.com/studio/dashboard",
+    "https://www.redbubble.com/account/sales",
     "https://www.redbubble.com/portfolio/manage_works",
-    "https://www.redbubble.com/sales",
-    "https://www.redbubble.com/studio",
 ]
 
 

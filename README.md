@@ -6,8 +6,9 @@
 
 ## Why this exists
 
-- Redbubble's own internal web API (`redbubble.com/api/v2/...`) is undocumented and cookie-authenticated — this server wraps it with your saved session.
-- Design uploads are done through a **real browser window** (Playwright) so that logins, captchas and Cloudflare stay human, not headless.
+- **Cloudflare reality**: Redbubble is Cloudflare-protected — plain HTTP clients (requests/httpx) and even headless browsers get challenged, no matter what cookies you carry. This server runs all session traffic through a **real headed browser page** (Playwright) executing fetches in-page, which is the only setup that passes.
+- Redbubble's artist dashboard runs its own **studio GraphQL API** (`POST /studio/graphql`). We capture the frontend's real queries (earnings summary, payment info, work details) and expose them as tools, plus a generic GraphQL passthrough for discovery.
+- Design uploads go through a **real browser flow**: opening one of your existing works' *duplicate* page and swapping the image, so product settings and enabled products copy over exactly — the proven pattern of hand-maintained upload bots.
 - Built-in safety rails because [Redbubble's guidelines allow permanent account closure](https://help.redbubble.com/hc/en-us/articles/202270929-Community-and-Content-Guidelines) for bot abuse:
   - hard cap of **30 uploads/day** (Redbubble's own published limit)
   - configurable pacing (default 5 minutes between uploads)
@@ -15,15 +16,16 @@
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `safety_info` | The automation ground rules (caps, pacing, ToS) |
-| `redbubble_status` | Saved session OK? How many uploads left today? |
-| `redbubble_get(path, params)` | Read-only GET against any Redbubble internal-API path |
-| `redbubble_post(path, payload)` | Write via the internal API — use sparingly |
-| `upload_work(image, title, tags, ...)` | Upload a design file via a real browser (optionally duplicating an existing work's product setup) |
-
-Endpoint paths are undocumented, so generic `redbubble_get`/`redbubble_post` are exposed so agents can **discover endpoints live** against the account owner's session instead of relying on hard-coded guesses that rot.
+| Tool | What it does | Status |
+| --- | --- | --- |
+| `safety_info` | The automation ground rules (caps, pacing, ToS) | live-tested |
+| `redbubble_status` | Saved session OK? How many uploads left today? | live-tested |
+| `list_works` | Every portfolio work with ids, titles, edit/duplicate URLs | live-tested |
+| `get_earnings` | Total earnings + 12-month earnings graph | live-tested |
+| `get_payment_info` | Payout method, payability, last/next payment dates | live-tested |
+| `get_work_details` | Title, tags, publication state, image + shop URL per work id | live-tested |
+| `graphql_tool` | Generic passthrough to Redbubble's studio GraphQL schema | live-tested |
+| `upload_work` | Upload a design file via a real browser (optionally duplicating an existing work's product setup) | works, selectors need live feedback |
 
 ## Install
 
@@ -77,19 +79,22 @@ Example operating style for the agent goading your assistant along:
 
 ```
 src/redbubble_mcp/
-  server.py          MCP server + tool definitions
-  login.py           one-time headful login capturing your session
-  client.py          authenticated HTTP client (cookie + XSRF handling)
-  session.py         persisted cookie store (~/.redbubble-mcp/session.json)
-  upload_browser.py  Playwright upload flow (Add New Work / duplicate a listed work)
-  guards.py          daily cap ledger + pacing interval
+  server.py           MCP server + tool definitions
+  login.py            one-time headful login capturing your session
+  browser_session.py  keeps one headed browser alive for all traffic
+  browser_client.py   in-page fetch client (GraphQL + JSON GET) with challenge retry
+  works.py            portfolio URL parsing
+  session.py          persisted session state (~/.redbubble-mcp/)
+  upload_browser.py   Playwright upload flow (Add New Work / duplicate a listed work)
+  guards.py           daily cap ledger + pacing interval
 ```
 
 ## Roadmap
 
-- [ ] High-level profile tools (list_works / get_sales / get_earnings) once endpoint paths are confirmed against live sessions
+- [x] High-level profile tools (get_earnings / get_payment_info / list_works / get_work_details)
 - [ ] Batch upload with per-file tags from a CSV (`title,tags,description,file`)
 - [ ] Edit/delete existing works (title, tags, description, margin %)
+- [ ] Sales listing page (`/account/sales`) as a tool
 - [ ] Write permission guide (how to ask Redbubble for written automation approval)
 
 ## Not affiliated

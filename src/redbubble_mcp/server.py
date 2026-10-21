@@ -1,107 +1,135 @@
 """Redbubble MCP server - tools that let an AI agent act as your print-on-demand
-account assistant: session status, generic API discovery against Redbubble's own
-web API, and guarded design uploads.
+account assistant.
 
-All writes go through the UploadLedger guard (30/day cap + pacing) because
-Redbubble's ToS permits permanent bans for automated abuse."""
+Everything runs through a real headed browser page (Cloudflare defeats plain
+HTTP and headless browsers), so expect a Redbubble window to appear while tools
+run. Writes are guarded by UploadLedger: 30/day cap + pacing, per Redbubble's ToS."""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-from pathlib import Path
 
 from fastmcp import FastMCP
 
-from redbubble_mcp.client import BASE_URL, RBAuthError, RedbubbleClient
+from redbubble_mcp.browser_client import BrowserClient, RBAuthError
+from redbubble_mcp.browser_session import get_session, has_session
 from redbubble_mcp.guards import UploadLedger
-from redbubble_mcp.session import SessionStore
+from redbubble_mcp.works import parse_works
 
 mcp = FastMCP(
     "redbubble",
     instructions=(
-        "Assistant tools for the artist's own Redbubble account. Use redbubble_get "
-        "for read-only API discovery, redbubble_post sparingly for writes, and "
-        "upload_work to publish a design file. Check safety_info before any write."
+        "Redbubble assistant for the artist's own account. Prefer the high-level "
+        "tools (list_works, get_earnings, get_payment_info, safety_info). "
+        "graphql_tool for anything else Redbubble's studio GraphQL schema offers; "
+        "upload_work to publish a design. Check safety_info before any write."
     ),
 )
 
+EARNINGS_QUERY = (
+    "query withEarningsSummary($aggregatedBy: String, $to: String, $from: String, $timezone: String) "
+    "{ earningsSummary(aggregatedBy: $aggregatedBy, to: $to, from: $from, timezone: $timezone) "
+    "{ currencyIso totalEarnings graphData { x y __typename } __typename } }"
+)
+PAYMENT_QUERY = (
+    "query withUserPaymentInformation "
+    "{ artistData: artistAccount_artistData { paymentInformation "
+    "{ paymentMethod payability lastPaymentDate nextPaymentDate __typename } __typename } }"
+)
+WORKS_QUERY = (
+    "query withWorks($workIds: [ID!]!, $locale: String!) "
+    "{ artistData: artistAccount_artistData { works(ids: $workIds) { ...WorkDetails __typename } __typename } } "
+    "fragment WorkDetails on artistAccount_Work { workId title(locale: $locale) "
+    "image: studioImage(maxWidth: 160) { url __typename } url(locale: $locale) "
+    "publicationState tags(locale: $locale) __typename }"
+)
 
-def _client() -> RedbubbleClient:
-    store = SessionStore()
-    http = __import__("httpx").Client()
-    client = RedbubbleClient(http=http, session_store=store)
-    client.base_url = BASE_URL
-    return client
 
-
-def _ledger() -> UploadLedger:
-    return UploadLedger()
+def _client() -> BrowserClient:
+    return BrowserClient(page_provider=lambda: get_session().current_page)
 
 
 @mcp.tool
 def safety_info() -> str:
     """Redbubble's bot-automation rules: daily upload cap, pacing, ToS risk summary."""
     return (
-        "Redbubble has no official public artist API; this tool uses their internal web API.\n"
+        "Redbubble has no official public artist API; this tool uses their interfaces.\n"
         "- Hard limit: 30 uploads/day across all accounts (ToS-enforced).\n"
         "- ToS: automation without written permission can permanently close the account.\n"
-        "- Mitigations built in here: 30/day cap enforced, minimum "
-        f"{_ledger().min_interval_s:.0f}s between uploads, personal use only.\n"
-        "- Rule of thumb for the agent: read freely, write slowly, never bulk-farm."
+        f"- Mitigations here: 30/day cap enforced, {UploadLedger().min_interval_s:.0f}s min between uploads.\n"
+        "- Rule of thumb: read freely, write slowly, never bulk-farm."
     )
 
 
 @mcp.tool
 def redbubble_status() -> str:
     """Check whether a saved Redbubble session exists and today's upload budget."""
-    store = SessionStore()
-    ledger = _ledger()
     today = dt.date.today()
-    cookies = store.cookie_names()
-    lines = [
-        f"session: {'saved' if store.cookies else 'MISSING (run: redbubble-mcp-login)'}",
-        f"cookies: {len(cookies)} stored",
-        f"xsrf token: {'yes' if store.xsrf_token() else 'no'}",
-        (
-            f"user_agent: {store.user_agent[:60]}..."
-            if store.user_agent
-            else "user_agent: none"
-        ),
-        f"uploads today: {ledger.count_on(today)}/30",
-    ]
-    return "\n".join(lines)
+    ledger = UploadLedger()
+    return (
+        f"saved session: {'yes' if has_session() else 'NO (run: redbubble-mcp-login)'}\n"
+        f"uploads today: {ledger.count_on(today)}/30"
+    )
 
 
 @mcp.tool
-def redbubble_get(path: str, params: dict | None = None) -> str:
-    """GET any Redbubble internal-API path (e.g. /api/v2/...). Returns JSON text.
-    Endpoints are undocumented - discover them live via your browser's devtools or
-    by probing reasonable paths. Read-only."""
-    client = _client()
-    try:
-        data = client.api_get(path, params=params)
-        return json.dumps(data)
-    except RBAuthError as exc:
-        return f"AUTH ERROR: {exc}"
-    except Exception as exc:
-        return f"ERROR: {exc}"
+def list_works() -> str:
+    """List every work in your Redbubble portfolio (id, title, edit/duplicate URLs)."""
+    page = get_session().current_page
+    page.goto("https://www.redbubble.com/portfolio/manage_works", wait_until="domcontentloaded", timeout=60_000)
+    page.wait_for_timeout(3_000)
+    hrefs = page.evaluate(
+        "() => Array.from(new Set(Array.from(document.querySelectorAll('a[href]')).map(a => a.href)))"
+    )
+    return json.dumps(parse_works(hrefs))
 
 
 @mcp.tool
-def redbubble_post(path: str, payload: dict | None = None) -> str:
-    """POST to a Redbubble internal-API path. This WRITES to the account - use
-    sparingly, only for the owner's own account, and check safety_info first."""
-    ledger = _ledger()
-    status = safety_info()
-    client = _client()
+def get_earnings() -> str:
+    """Total earnings + monthly graph for the last 12 months (from Redbubble's studio GraphQL)."""
+    today = dt.datetime.now()
+    year_ago = today - dt.timedelta(days=365)
+    variables = {
+        "aggregatedBy": "month",
+        "to": today.strftime("%Y-%m-01T00:00:00.000Z"),
+        "from": year_ago.strftime("%Y-%m-01T00:00:00.000Z"),
+        "timezone": "utc",
+    }
     try:
-        data = client.api_post(path, json=payload or {})
+        data = _client().graphql(EARNINGS_QUERY, variables=variables)
         return json.dumps(data)
     except RBAuthError as exc:
         return f"AUTH ERROR: {exc}"
-    except Exception as exc:
-        return f"ERROR: {exc}. {status}"
+
+
+@mcp.tool
+def get_payment_info() -> str:
+    """Payout info: payment method, payability, last/next payment dates."""
+    try:
+        return json.dumps(_client().graphql(PAYMENT_QUERY))
+    except RBAuthError as exc:
+        return f"AUTH ERROR: {exc}"
+
+
+@mcp.tool
+def get_work_details(work_ids: list[int]) -> str:
+    """Details for specific works by numeric id (title, tags, publicationState, image url, shop url)."""
+    try:
+        return json.dumps(_client().graphql(WORKS_QUERY, variables={"workIds": work_ids, "locale": "en"}))
+    except RBAuthError as exc:
+        return f"AUTH ERROR: {exc}"
+
+
+@mcp.tool
+def graphql_tool(query: str, variables: dict | None = None) -> str:
+    """Run any GraphQL query/mutation against Redbubble's studio GraphQL endpoint
+    (POST /studio/graphql). READ queries only for discovery; mutations will hit
+    the real account. Returns {data: ...}."""
+    try:
+        return json.dumps(_client().graphql(query, variables=variables))
+    except RBAuthError as exc:
+        return f"AUTH ERROR: {exc}"
 
 
 @mcp.tool
@@ -115,20 +143,19 @@ def upload_work(
     """Upload a design file to Redbubble using a real browser session.
 
     template_work_url: URL of one of your existing works to copy product settings
-    from (Recommended, format https://www.redbubble.com/portfolio/images/<id>-<slug>).
-    If omitted, starts from the default Add New Work page.
-
-    tags: comma-separated, max 15. Enforces 30/day cap + pacing interval."""
-    ledger = _ledger()
+    from (format https://www.redbubble.com/portfolio/images/<id>-<slug>) - the
+    most reliable, least detectable approach. tags: comma-separated, max 15.
+    Enforces 30/day cap + pacing interval."""
+    ledger = UploadLedger()
     now = dt.datetime.now()
     try:
         ledger.assert_can_upload(now)
     except Exception as exc:
         return f"BLOCKED: {exc}"
 
-    from redbubble_mcp.upload_browser import upload_via_browser
-
     try:
+        from redbubble_mcp.upload_browser import upload_via_browser
+
         result = upload_via_browser(
             image_path=image_path,
             title=title,
