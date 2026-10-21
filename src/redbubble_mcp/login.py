@@ -15,7 +15,6 @@ from redbubble_mcp.guards import DEFAULT_DIR
 
 LOGIN_URL = "https://www.redbubble.com/auth/login"
 HOME_URL = "https://www.redbubble.com/"
-LOGGED_IN_MARKS = ("Manage portfolio", "Add new work", "Add New Work", "Saved payment")
 
 
 def main() -> int:
@@ -64,17 +63,19 @@ def main() -> int:
                 print("The window was closed - relaunching it...")
                 browser, context, page = reconnect()
                 page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
-            page.wait_for_timeout(3_000)
-            body = page.evaluate("document.body.innerText.slice(0, 4000)")
+            cookies = context.cookies("https://www.redbubble.com")
+            cookie_names = {c["name"] for c in cookies}
+            logged_in = (
+                "_rb_session" in cookie_names or "_rb_session4" in cookie_names
+            ) and "/auth" not in page.url
 
-            if not any(mark in body for mark in LOGGED_IN_MARKS):
+            if not logged_in:
                 print(
-                    "Doesn't look logged in yet (no artist dashboard detected). "
-                    "Finish the login in the window and press Enter again."
+                    "No artist session cookie yet - finish the login in the "
+                    "window and press Enter again."
                 )
                 continue
 
-            cookies = context.cookies("https://www.redbubble.com")
             cookie_values = {c["name"]: c["value"] for c in cookies}
             ua = page.evaluate("navigator.userAgent") or ""
 
