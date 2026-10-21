@@ -63,15 +63,15 @@ class BrowserSession:
         self.context = None
         self.browser = None
 
-    def _ensure_chrome(self):
-        if _cdp_alive():
-            return
-        _spawn_chrome()
-        deadline = time.time() + 60
-        while not _cdp_alive() and time.time() < deadline:
-            time.sleep(1)
-        if not _cdp_alive():
-            raise RuntimeError("could not start Redbubble browser")
+def _ensure_chrome() -> None:
+    if _cdp_alive():
+        return
+    _spawn_chrome()
+    deadline = time.time() + 60
+    while not _cdp_alive() and time.time() < deadline:
+        time.sleep(1)
+    if not _cdp_alive():
+        raise RuntimeError("could not start Redbubble browser")
 
     def _start(self):
         from playwright.sync_api import sync_playwright
@@ -82,7 +82,7 @@ class BrowserSession:
                 "No saved browser session. Run `redbubble-mcp-login` first."
             )
 
-        self._ensure_chrome()
+        _ensure_chrome()
         self._pw = sync_playwright().start()
         self.browser = self._pw.chromium.connect_over_cdp(CDP_URL)
         self.context = self.browser.contexts[0]
