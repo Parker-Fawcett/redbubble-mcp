@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+playwright-report/
+test-results/
+# local auth state must never be committed
+state/
+*.auth.json
+ledger.json
